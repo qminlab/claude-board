@@ -318,6 +318,9 @@ def handle_event(data, source="app"):
         return True
     if sid in state["blocked"]:              # 대기판에서 연결을 끊은 대화
         return True
+    if data.get("ev"):                       # 자동 기록 장치(1.0~)가 보낸 날것 신호 → 판단은 여기서
+        handle_relay(data, sid, source)
+        return True
     if status not in STATUSES:
         return False
     note = data.get("note")
@@ -333,10 +336,180 @@ def handle_event(data, source="app"):
     return True
 
 
+# ---------- 앱 대화 자동 기록 장치 (board-live 1.0~) ----------
+# 장치는 일어난 일만 그대로 보내고(턴 시작·권한 판정·도구 실행 끝·턴 끝), 무엇을 어느 칸에 둘지는 여기서 정한다.
+# 그래서 규칙을 바꿀 때 이 파일만 고치면 모든 대화에 바로 적용된다.
+GRACE = 4.0            # 권한 판정 "묻기"가 나와도 이 시간 안에 실행이 끝나면 미리 허용된 도구로 보고 확인 필요로 안 올림
+LEARNED_GRACE = 45.0   # 미리 허용된 걸로 기억된 도구는 이만큼 기다림 (오래 걸리는 명령도 안 걸리게)
+ASK_TOOLS = re.compile(r"request_folder_access|request_access|request_delete_permission|request_full_control|AskUserQuestion")
+SKIP_LINE = ("💡", "```", "Sources", "출처")
+rt = {}                # 대화별 진행 상황(메모리): 턴 시작 시각, 승인 대기 중인 도구 등
+
+
+def strip_tags(text):
+    text = re.sub(r"<system-reminder>[\s\S]*?</system-reminder>", " ", str(text or ""))
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def friendly(tool, inp):
+    """권한 창에 뜬 도구를 사람이 읽기 쉬운 말로."""
+    tool = str(tool or "")
+    i = inp if isinstance(inp, dict) else {}
+    short = tool.split("__")[-1] or tool
+    if tool == "WebFetch":
+        m = re.match(r"https?://([^/?#]+)", str(i.get("url") or ""))
+        return clip(f"웹페이지 가져오기 {m.group(1) if m else ''}".strip())
+    if tool == "WebSearch":
+        return clip(f"웹 검색 {i.get('query') or ''}".strip())
+    if tool == "Bash" or tool.endswith("device_bash"):
+        return clip(f"명령 실행: {i.get('command') or ''}")
+    if tool in ("Write", "Edit", "NotebookEdit"):
+        return clip(f"파일 수정: {i.get('file_path') or ''}")
+    if "request_folder_access" in tool:
+        return "맥 폴더 접근 허용"
+    if "request_delete_permission" in tool:
+        return "맥 파일 삭제 허용"
+    if re.search(r"computer|request_access|request_full_control", tool):
+        return "컴퓨터 조작 허용"
+    if re.search(r"claude-in-chrome|Claude_Browser", tool):
+        return clip(f"브라우저 조작: {short}")
+    if tool == "AskUserQuestion":
+        return "선택지 질문"
+    return clip(short)
+
+
+def answer_note(head, tail):
+    """답이 끝났을 때 메모: 질문으로 끝났으면 그 질문, 아니면 첫 줄."""
+    def lines(t):
+        out = []
+        for l in strip_tags(t).splitlines():
+            l = l.strip()
+            if l and not l.startswith(SKIP_LINE):
+                out.append(re.sub(r"^[#>*\-\s\d.]+", "", l).replace("**", "").replace("`", ""))
+        return [l for l in out if l]
+    first = (lines(head) or ["응답 완료"])[0]
+    last_lines = lines(tail)
+    last = last_lines[-1] if last_lines else ""
+    bare = re.sub(r"[*_`\"')\]」』\s]+$", "", last)
+    return clip(last if bare.endswith(("?", "？")) else first)
+
+
+def learn(tool):
+    if tool and not ASK_TOOLS.search(tool):
+        state.setdefault("auto_tools", {})[tool] = time.time()
+
+
+def handle_relay(data, sid, source):
+    ev = str(data.get("ev"))
+    try:
+        ts = float(data.get("ts"))
+    except (TypeError, ValueError):
+        ts = time.time() * 1000
+    project = clip(data.get("project"), 30) or None
+    title = clip(data.get("title"), 40) or None
+    tool = str(data.get("tool") or "")
+    key = str(data.get("use") or "") or "tool:" + tool
+    r = rt.setdefault(sid, {"turn": 0, "closed": 0, "pending": {}, "ran": {}})
+
+    def late():                             # 이미 지난 턴의 신호 (파일이 늦게 도착)
+        return ts < r["turn"] or (r["closed"] >= r["turn"] and ts <= r["closed"])
+
+    if ev == "ended":
+        ended(sid)
+        rt.pop(sid, None)
+    elif ev == "start":
+        if ts < r["turn"]:
+            return
+        r.update(turn=ts, closed=0, pending={}, ran={})
+        note = clip(strip_tags(data.get("text")))
+        upsert(sid, source, "working", project, title, note=note or "")
+    elif ev == "end":
+        if ts < r["turn"]:
+            return
+        r.update(closed=ts, pending={}, ran={})
+        kind = data.get("kind")
+        if kind == "aborted":
+            upsert(sid, source, "needs", project, title, reason="중단됨", alert="응답 도중 멈췄어요")
+        elif kind == "error":
+            upsert(sid, source, "needs", project, title, reason="오류", alert="오류로 멈췄어요", error=True)
+        else:
+            upsert(sid, source, "done", project, title, note=answer_note(data.get("head"), data.get("tail")))
+    elif ev in ("ask", "question"):
+        if late():
+            return
+        if key in r["ran"]:                 # 실행 끝 신호가 먼저 도착함
+            if r["ran"].pop(key) - ts < GRACE * 1000:
+                learn(tool)
+            return
+        if any(p["tool"] == tool for p in r["pending"].values()):
+            return                          # 같은 도구의 두 번째 판정 신호 (중복)
+        note = friendly(tool, data.get("input"))
+        if ev == "question":
+            r["pending"][key] = {"tool": tool, "ts": ts, "due": 0, "shown": True}
+            upsert(sid, source, "needs", project, title, reason="선택 필요", alert=note)
+            return
+        wait = LEARNED_GRACE if tool in state.get("auto_tools", {}) else GRACE
+        r["pending"][key] = {"tool": tool, "ts": ts, "due": time.time() + wait, "shown": False,
+                             "note": note, "project": project, "title": title}
+    elif ev == "ran":
+        hit = [k for k, p in r["pending"].items() if k == key or p["tool"] == tool]
+        if not hit:
+            if not late():
+                r["ran"][key] = ts
+            return
+        for k in hit:
+            p = r["pending"].pop(k)
+            if not p["shown"] and ts - p["ts"] < GRACE * 1000:
+                learn(tool)
+        s = state["sessions"].get(sid)
+        if s and s["status"] == "needs" and not any(p["shown"] for p in r["pending"].values()) and not late():
+            upsert(sid, source, "working", project, title)
+
+
+def check_pending():
+    """기다려 봐도 실행이 안 끝난 도구 → 정말 승인 창을 기다리는 중이므로 확인 필요."""
+    changed = False
+    now = time.time()
+    for sid, r in rt.items():
+        for p in r["pending"].values():
+            if p["shown"] or now < p["due"]:
+                continue
+            p["shown"] = True
+            s = state["sessions"].get(sid)
+            if s and s["status"] == "working":
+                upsert(sid, s["source"], "needs", p.get("project"), p.get("title"), reason=R_PERMISSION, alert=p["note"])
+                changed = True
+    return changed
+
+
+SELF = os.path.abspath(__file__)
+
+
+def self_reload_if_changed(started_mtime):
+    """server.py 파일이 바뀌면 스스로 다시 시작 (Claude가 맥에 새 버전을 올리면 바로 적용)."""
+    try:
+        mtime = os.path.getmtime(SELF)
+        if mtime == started_mtime:
+            return
+        with open(SELF, encoding="utf-8") as f:
+            compile(f.read(), SELF, "exec")      # 덜 써졌거나 문법이 틀린 파일이면 다음에 다시
+    except (OSError, SyntaxError, ValueError):
+        return
+    with lock:
+        save_state()
+    print("server.py가 바뀌어서 다시 시작해요", flush=True)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def watch_inbox():
     """inbox 폴더를 0.2초마다 확인. 아직 다 안 써진 파일은 다음 차례에 다시 읽음."""
     os.makedirs(INBOX, exist_ok=True)
+    started = os.path.getmtime(SELF)
+    tick = 0
     while True:
+        tick += 1
+        if tick % 10 == 0:
+            self_reload_if_changed(started)
         try:
             files = []
             for name in os.listdir(INBOX):
@@ -367,6 +540,9 @@ def watch_inbox():
                     pass
         except OSError:
             pass
+        with lock:
+            if check_pending():
+                save_state()
         time.sleep(0.2)
 
 

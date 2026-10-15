@@ -7,7 +7,7 @@ description: "지금 대화를 아이패드 Claude 대기판에 이름과 함께
 
 사용자의 맥에서 대기판 서버가 `~/JARVIS/claude-board/inbox/` 폴더를 지켜보고 있다. 이 폴더에 상태 파일을 넣으면 아이패드 대기판에 카드가 뜨고 옮겨진다.
 
-이 스킬은 대화에 **자동 기록 장치(board-live 모드)**를 붙인다. 장치가 켜지면 매 턴 시작에 `working`, 답이 끝나면 `done`, 작업 도중 권한 승인 창(웹페이지 가져오기 확인 등)·폴더 허용·선택지 창이 뜨거나 오류·중단이 나면 `needs`가 자동으로 올라간다(앱에서 미리 "항상 허용"해 둔 도구는 창 없이 바로 실행되므로 `needs`로 올리지 않는다). 사용자가 장치를 켜지 않으면 3절대로 Claude가 매 턴 직접 기록한다.
+이 스킬은 대화에 **자동 기록 장치(board-live 모드)**를 붙인다. 장치는 이 대화에서 일어난 일(턴 시작, 권한 판정, 도구 실행 끝, 턴 끝)을 그대로 맥으로 보내기만 하고, 어느 칸에 둘지는 **맥의 대기판 서버(server.py)가 정한다**. 그래서 상태 규칙을 바꿀 때는 맥의 `~/JARVIS/claude-board/server.py`만 고치면 모든 대화에 바로 적용되고(서버는 파일이 바뀌면 스스로 다시 시작한다), 대화마다 `/board 업데이트`를 할 필요가 없다. 서버는 턴 시작에 `working`, 답이 끝나면 `done`, 작업 도중 권한 승인 창·폴더 허용·선택지 창이 뜨거나 오류·중단이 나면 `needs`로 둔다(앱에서 미리 "항상 허용"해 둔 도구는 창 없이 바로 실행되므로 `needs`로 올리지 않는다). 사용자가 장치를 켜지 않으면 3절대로 Claude가 매 턴 직접 기록한다.
 
 **상태 기준** (사용자가 정함)
 - `needs`(확인 필요): 작업 도중 사용자가 처리해야 진행되는 경우만. 권한 요청, 폴더·컴퓨터 접근 허용, 선택지 창, 오류, 중단.
@@ -31,7 +31,7 @@ description: "지금 대화를 아이패드 Claude 대기판에 이름과 함께
 
 `board-live/.claude-plugin/plugin.json`
 ```json
-{ "name": "board-live", "version": "0.4.0", "description": "매 턴 시작·끝에 이 대화의 상태를 맥의 Claude 대기판으로 보냄" }
+{ "name": "board-live", "version": "1.0.0", "description": "이 대화에서 일어난 일을 맥의 Claude 대기판으로 보냄 (판단은 맥 서버가 함)" }
 ```
 
 `board-live/hooks/hooks.json`
@@ -48,136 +48,46 @@ description: "지금 대화를 아이패드 Claude 대기판에 이름과 함께
 ```ts
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
-// 이 대화의 상태를 맥의 ~/JARVIS/claude-board/inbox/ 로 보낸다.
-// 설정(id·title·project)은 모드 폴더의 board.json. 없으면 아무것도 하지 않는다.
-// 확인 필요(needs) = 작업 도중 막힌 경우만: 권한 승인·폴더 허용·선택지 창·오류·중단. 답이 끝나면 완료(done).
+// 이 대화에서 일어난 일을 그대로 맥의 ~/JARVIS/claude-board/inbox/ 로 보낸다.
+// 어느 칸(작업중·확인 필요·완료)에 둘지는 맥의 대기판 서버가 정한다.
+// 그래서 규칙이 바뀌어도 이 파일은 그대로 두고 맥의 server.py만 고치면 모든 대화에 적용된다.
+// 설정(id·title·project)은 모드 폴더의 board.json. 없거나 off면 아무것도 보내지 않는다.
 type Cfg = { id: string; title?: string; project?: string; off?: boolean }
-type Status = 'working' | 'needs' | 'done' | 'ended'
-type Extra = { note?: string; reason?: string; error?: boolean }
+type Signal = Record<string, unknown>
 
 const ASK_TOOLS = /request_folder_access|request_access|request_delete_permission|request_full_control|AskUserQuestion/
 const OWN_TOOL = /device_commit_files/
+const INPUT_KEYS = ['url', 'query', 'command', 'file_path', 'description']
 
-// 권한 판정이 "묻기"여도 앱에서 미리 "항상 허용"해 둔 도구는 창 없이 바로 실행된다.
-// 그래서 바로 확인 필요로 올리지 않고 잠깐 기다렸다가, 그때까지 실행이 안 끝났을 때만 올린다.
-// 기다리는 동안 끝난 도구는 "미리 허용됨"으로 기억해 두고, 다음부터는 훨씬 오래 기다린다(긴 명령도 안 걸리게).
-const GRACE_MS = 4000
-const LEARNED_GRACE_MS = 45000
-const STORE_KEY = 'autoApproved'
+const asked = new Set<string>()
 
-let current = ''
-let pendingSeq = 0
-const pending = new Map<string, { tool: string; since: number }>()
-let autoTools: Set<string> | undefined
-
-function clip(t: string, n = 60) {
-  const s = t
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return s.length <= n ? s : s.slice(0, n - 1) + '…'
+function cut(v: unknown, n: number) {
+  const s = String(v ?? '')
+  return s.length <= n ? s : s.slice(0, n)
 }
 
-function lines(t: string) {
-  return t.split('\n').map(l => l.trim()).filter(l => l && !/^(💡|```|Sources|출처)/.test(l))
-}
-
-function plain(l: string) {
-  return l.replace(/^[#>*\-\s\d.]+/, '').replace(/\*\*/g, '').replace(/`/g, '')
-}
-
-function shortTool(name: string) {
-  const parts = name.split('__')
-  return parts[parts.length - 1] || name
-}
-
-// 권한 창에 뜬 도구를 사람이 읽기 쉬운 말로
-function describe(tool: string, input: unknown) {
+// 권한 창 설명에 쓸 만한 인자만 짧게
+function pick(input: unknown) {
   const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const host = (u: unknown) => {
-    const m = /^https?:\/\/([^/?#]+)/.exec(String(u ?? ''))
-    return m ? m[1] : ''
-  }
-  if (tool === 'WebFetch') return clip(`웹페이지 가져오기 ${host(i.url)}`.trim())
-  if (tool === 'WebSearch') return clip(`웹 검색 ${String(i.query ?? '')}`.trim())
-  if (tool === 'Bash') return clip(`명령 실행: ${String(i.command ?? '')}`)
-  if (/^(Write|Edit|NotebookEdit)$/.test(tool)) return clip(`파일 수정: ${String(i.file_path ?? '')}`)
-  if (/request_folder_access/.test(tool)) return '맥 폴더 접근 허용'
-  if (/request_delete_permission/.test(tool)) return '맥 파일 삭제 허용'
-  if (/computer|request_access|request_full_control/.test(tool)) return '컴퓨터 조작 허용'
-  if (/claude-in-chrome|Claude_Browser/.test(tool)) return clip(`브라우저 조작: ${shortTool(tool)}`)
-  if (tool === 'AskUserQuestion') return '선택지 질문'
-  return clip(shortTool(tool))
+  const out: Record<string, string> = {}
+  for (const k of INPUT_KEYS) if (i[k] != null) out[k] = cut(i[k], 200)
+  return out
 }
 
-// 답이 끝나면 언제나 완료. 다음 단계를 묻는 질문으로 끝나도 완료이고, 메모에 그 질문을 보여 준다.
-function judge(answer: string): { status: Status; extra: Extra } {
-  const ls = lines(answer)
-  const last = ls[ls.length - 1] ?? ''
-  const isQuestion = /[?？]$/.test(last.replace(/[*_`"')\]」』\s]+$/, ''))
-  return { status: 'done', extra: { note: clip(plain(isQuestion ? last : (ls[0] ?? '응답 완료'))) } }
-}
-
-async function learned($: Engine) {
-  if (!autoTools) {
-    try {
-      const v = await $.store.get(STORE_KEY)
-      autoTools = new Set(Array.isArray(v) ? v.map(String) : [])
-    } catch {
-      autoTools = new Set()
-    }
-  }
-  return autoTools
-}
-
-// 승인을 기다리는 호출을 적어 두고, 잠시 뒤에도 그대로면 확인 필요로 올린다
-async function waitApproval($: Engine, key: string, tool: string, input: unknown, reason = '권한 승인') {
-  if (pending.has(key)) return
-  for (const p of pending.values()) if (p.tool === tool) return
-  pending.set(key, { tool, since: Date.now() })
-  const known = (await learned($)).has(tool)
-  $.clock.after(known ? LEARNED_GRACE_MS : GRACE_MS, () => {
-    if (pending.has(key) && current !== 'needs') send($, 'needs', { reason, note: describe(tool, input) })
-  })
-}
-
-// 도구 실행이 끝나면 기다림을 지운다. 금방 끝났으면 미리 허용된 도구로 기억한다.
-async function settle($: Engine, id: string | undefined, tool: string) {
-  let quick = false
-  for (const [k, p] of pending) {
-    if (k === id || p.tool === tool) {
-      if (Date.now() - p.since < GRACE_MS) quick = true
-      pending.delete(k)
-    }
-  }
-  if (quick && !ASK_TOOLS.test(tool)) {
-    const set = await learned($)
-    if (!set.has(tool)) {
-      set.add(tool)
-      try {
-        await $.store.set(STORE_KEY, [...set])
-      } catch {
-        // 기억 실패는 무시
-      }
-    }
-  }
-}
-
-function send($: Engine, status: Status, extra: Extra) {
-  current = status
+function send($: Engine, ev: string, extra: Signal = {}) {
+  const ts = Date.now()
   $.clock.after(0, () => {
-    void post($, status, extra)
+    void post($, { ev, ts, ...extra })
   })
 }
 
-async function post($: Engine, status: Status, extra: Extra) {
+async function post($: Engine, signal: Signal) {
   try {
     const cfg = JSON.parse(await $.fs.read(`${$.plugin.root}/board.json`)) as Cfg
     if (!cfg.id || cfg.off) return
-    const name = `${cfg.id}-${Date.now()}.json`
+    const name = `${cfg.id}-${String(signal.ts ?? Date.now())}-${String(signal.ev)}.json`
     const staged = `/mnt/user-data/outputs/board/${name}`
-    const body = { id: cfg.id, title: cfg.title ?? '', project: cfg.project || cfg.title || '', status, ...extra }
+    const body = { id: cfg.id, title: cfg.title ?? '', project: cfg.project || cfg.title || '', ...signal }
     await $.fs.write(staged, JSON.stringify(body))
     await $.tool.call({
       tool: 'mcp__remote-devices__device_commit_files',
@@ -192,69 +102,63 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
     if (!e.agentId) {
-      const note = clip(e.text || '')
-      send($, 'working', note ? { note } : {})
+      asked.clear()
+      send($, 'start', { text: cut(e.text, 300) })
     }
     return r
   })
 
-  // 권한 승인 창이 뜰 때(미리 허용된 도구면 곧 실행되므로 잠시 기다려 본다)
   on('classic.PermissionRequest', async ($, e, next) => {
-    if (!(e as { agent_id?: string }).agent_id) {
-      const tool = String(e.tool_name)
-      if (!OWN_TOOL.test(tool)) await waitApproval($, `pr-${++pendingSeq}`, tool, e.tool_input)
+    const tool = String(e.tool_name)
+    if (!(e as { agent_id?: string }).agent_id && !OWN_TOOL.test(tool)) {
+      asked.add(`tool:${tool}`)
+      send($, 'ask', { tool, input: pick(e.tool_input) })
     }
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // 선택지 질문은 바로, 폴더 접근·컴퓨터 사용 허락은 잠시 기다려 본 뒤 확인 필요. 끝나면 다시 작업중
-  on('tool.call', async ($, e, next) => {
-    const tool = String(e.tool)
-    const mine = !e.agentId && !OWN_TOOL.test(tool)
-    if (mine && /AskUserQuestion/.test(tool)) {
-      send($, 'needs', { reason: '선택 필요', note: describe(tool, e) })
-    } else if (mine && ASK_TOOLS.test(tool)) {
-      await waitApproval($, e.tool_use_id || `call-${++pendingSeq}`, tool, e)
-    }
-    let r
-    try {
-      r = await next(e)
-    } finally {
-      if (mine) {
-        await settle($, e.tool_use_id, tool)
-        if (current === 'needs') send($, 'working', {})
-      }
-    }
-    return r
-  }).catch(($, e, next) => next(e))
-
-  // 권한 판정이 "사용자에게 묻기"로 나오면(웹페이지 가져오기 확인 창 등) 잠시 기다려 본 뒤 확인 필요
   on('tool.check', async ($, e, next) => {
     const r = await next(e)
     const tool = String(e.tool)
     if (r.decision === 'ask' && e.tool_use_id && !e.agentId && !OWN_TOOL.test(tool)) {
-      await waitApproval($, e.tool_use_id, tool, e.input)
+      asked.add(e.tool_use_id)
+      send($, 'ask', { use: e.tool_use_id, tool, input: pick(e.input) })
     }
     return r
   }).catch(($, e, next) => next(e))
 
-  // 대화가 끝나면(지운 대화 등) 카드를 정리하도록 알림. 프로세스가 바로 꺼지면 못 보낼 수도 있다.
+  on('tool.call', async ($, e, next) => {
+    const tool = String(e.tool)
+    const id = e.tool_use_id || ''
+    const mine = !e.agentId && !OWN_TOOL.test(tool)
+    if (mine && ASK_TOOLS.test(tool) && id) {
+      asked.add(id)
+      send($, /AskUserQuestion/.test(tool) ? 'question' : 'ask', { use: id, tool, input: pick(e) })
+    }
+    try {
+      return await next(e)
+    } finally {
+      if (mine && (asked.has(id) || asked.has(`tool:${tool}`))) {
+        asked.delete(id)
+        asked.delete(`tool:${tool}`)
+        send($, 'ran', { use: id, tool })
+      }
+    }
+  }).catch(($, e, next) => next(e))
+
   on('session.end', async ($, e, next) => {
     const r = await next(e)
-    await post($, 'ended', {})
+    await post($, { ev: 'ended', ts: Date.now() })
     return r
   })
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
-    pending.clear()
     if (!e.agentId) {
-      if (e.isAborted) send($, 'needs', { reason: '중단됨', note: '응답 도중 멈췄어요' })
-      else if (e.reason !== 'answer') send($, 'needs', { reason: '오류', note: '오류로 멈췄어요', error: true })
-      else {
-        const j = judge(e.answer)
-        send($, j.status, j.extra)
-      }
+      asked.clear()
+      const kind = e.isAborted ? 'aborted' : e.reason !== 'answer' ? 'error' : 'answer'
+      const text = kind === 'answer' ? String(e.answer ?? '') : ''
+      send($, 'end', { kind, head: text.slice(0, 600), tail: text.slice(-600) })
     }
     return r
   })
@@ -285,7 +189,7 @@ export const register: Register = on => {
 
 ## 4. 업데이트·이름 바꾸기·내리기
 
-- "/board 업데이트": 이미 등록된 대화의 장치를 최신으로 바꾼다. `plugin-authoring` 스킬을 불러 모드 폴더를 확인하고, `board.json`은 그대로 둔 채 나머지 장치 파일 3개만 위 내용으로 덮어쓴다. `board.json`이 없으면 1절 등록을 처음부터 한다. 최종 답변 바로 전, 맨 마지막 동작으로 2절 방법으로 `done`(note: "대기판 장치 업데이트")을 기록한다. 사용자에게 "대기판 장치를 최신으로 바꿨어요"라고 한 줄로 알린다. Enable 창이 다시 뜨면 눌러 달라고 덧붙인다.
+- "/board 업데이트": 이미 등록된 대화의 장치를 최신으로 바꾼다. 장치 1.0부터는 규칙이 맥 서버에 있으므로, 장치 파일의 `plugin.json` version이 이미 1.0.0 이상이면 "이 대화는 이미 최신 장치예요"라고 한 줄로 알리고 아무 파일도 바꾸지 않는다(이때는 완료 기록도 따로 하지 않는다). `plugin-authoring` 스킬을 불러 모드 폴더를 확인하고, `board.json`은 그대로 둔 채 나머지 장치 파일 3개만 위 내용으로 덮어쓴다. `board.json`이 없으면 1절 등록을 처음부터 한다. 최종 답변 바로 전, 맨 마지막 동작으로 2절 방법으로 `done`(note: "대기판 장치 업데이트")을 기록한다. 사용자에게 "대기판 장치를 최신으로 바꿨어요"라고 한 줄로 알린다. Enable 창이 다시 뜨면 눌러 달라고 덧붙인다.
 - "대기판 이름 ○○로 바꿔줘": `board.json`의 title과 project를 바꾸고, 최종 답변 바로 전 맨 마지막 동작으로 2절 방법으로 `done`을 새 이름으로 기록한다.
 - "대기판에서 내려줘", "/board 끝": 2절 방법으로 `{"status": "remove", "disconnect": true}`를 기록하고, `board.json`에 `"off": true`를 넣는다. 이후 이 대화에서는 기록하지 않는다.
 - 아이패드에서 카드를 길게 누르거나 연결 탭에서 끊으면, 그 id의 신호는 대기판이 더 이상 받지 않는다. 다시 "/board 이름"을 부르면 새 id로 처음부터 등록한다(장치 파일도 최신으로 덮어쓴다).
