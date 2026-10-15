@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Claude 대기판">
+<meta name="theme-color" content="#070708">
+<title>Claude 대기판</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Noto+Sans+KR:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070708; --panel:#0f0f11; --card:#16161a; --line:#232328;
+  --text:#f3f2ee; --dim:#8b8b92; --faint:#45454c;
+  --work:#ffb020; --work-glow:rgba(255,176,32,.45);
+  --need:#ff4b4b; --need-glow:rgba(255,75,75,.5);
+  --done:#38e07b; --done-glow:rgba(56,224,123,.45);
+  --num:"Chakra Petch",ui-monospace,Menlo,monospace;
+  --ko:"Noto Sans KR",-apple-system,"Apple SD Gothic Neo",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ko);overflow:hidden;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+body{display:flex;flex-direction:column;gap:14px;
+  padding:max(14px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+
+header{flex:none;display:flex;align-items:center;gap:10px;height:48px}
+.brand{font-size:22px;font-weight:900;letter-spacing:-.02em;display:flex;align-items:center;gap:10px;margin-right:auto}
+.brand .lamp{width:12px;height:12px;border-radius:50%;background:var(--work);box-shadow:0 0 12px var(--work-glow)}
+.conn{font-size:13px;color:var(--dim);display:flex;align-items:center;gap:6px;margin-right:6px}
+.conn i{width:8px;height:8px;border-radius:50%;background:var(--done)}
+.conn.off{color:var(--need)} .conn.off i{background:var(--need)}
+.toggle{font:inherit;font-size:13px;font-weight:700;display:flex;align-items:center;gap:7px;
+  color:var(--faint);background:none;border:1px solid var(--line);border-radius:999px;padding:6px 12px}
+.toggle i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.toggle.on{color:var(--text);border-color:#3a3a40}
+.toggle.on i{background:var(--c);box-shadow:0 0 8px var(--c)}
+.toggle s{font-weight:500;text-decoration:none;color:var(--dim)}
+#t-ding{--c:var(--done)} #t-beep{--c:var(--need)} #t-awake{--c:var(--work)}
+#hint{position:fixed;left:50%;top:76px;transform:translateX(-50%);z-index:20;max-width:min(560px,92vw);
+  background:#1d1d22;border:1px solid #3a3a40;border-radius:12px;padding:12px 16px;font-size:15px;line-height:1.5;
+  color:var(--text);box-shadow:0 10px 30px rgba(0,0,0,.5);display:none}
+#hint.show{display:block}
+#flash{position:fixed;inset:0;z-index:30;pointer-events:none;opacity:0}
+#flash.red{background:var(--need)} #flash.green{background:var(--done)}
+#flash.go{animation:flash .6s ease-in-out 4}
+@keyframes flash{0%,100%{opacity:0}50%{opacity:.6}}
+#t-links b{font-family:var(--num);color:var(--text)}
+#links{position:fixed;inset:0;z-index:25;background:rgba(0,0,0,.55);display:flex;justify-content:flex-end}
+#links[hidden]{display:none}
+.sheet{width:min(460px,100%);height:100%;background:#111114;border-left:1px solid var(--line);padding:22px 20px;overflow:auto;
+  padding-top:max(22px,env(safe-area-inset-top))}
+.sheet-head{display:flex;align-items:center;justify-content:space-between}
+.sheet-head h3{font-size:22px;font-weight:900}
+.btn-x{font:inherit;font-size:14px;color:var(--text);background:#1d1d22;border:1px solid var(--line);border-radius:999px;padding:7px 14px}
+.sheet-sub{margin:10px 0 16px;font-size:14px;line-height:1.6;color:var(--dim)}
+.link{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:14px 0;border-top:1px solid var(--line)}
+.link .nm{font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.link .mt{grid-column:1;font-size:13px;color:var(--dim);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.link .dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--faint)}
+.link .dot.working{background:var(--work)} .link .dot.needs{background:var(--need)} .link .dot.done{background:var(--done)}
+.link button{grid-row:1 / span 2;grid-column:2;font:inherit;font-size:14px;font-weight:700;color:#ffd0d0;background:none;
+  border:1px solid #5a2a2a;border-radius:10px;padding:9px 12px}
+.link button.sure{color:#1a0505;background:var(--need);border-color:var(--need)}
+.link-empty{color:var(--faint);font-size:15px;padding:24px 0;text-align:center}
+.clock{font-family:var(--num);font-size:30px;font-weight:700;letter-spacing:.04em;min-width:96px;text-align:right}
+
+main{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.col{--c:var(--work);--g:var(--work-glow);position:relative;display:flex;flex-direction:column;min-height:0;
+  background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.col.need{--c:var(--need);--g:var(--need-glow)}
+.col.done{--c:var(--done);--g:var(--done-glow)}
+.col::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:radial-gradient(rgba(255,255,255,.04) 1px,transparent 1.3px);background-size:6px 6px}
+.col h2{position:relative;display:flex;align-items:baseline;gap:10px;padding:16px 20px 12px;border-bottom:3px solid var(--c);
+  font-size:clamp(20px,2.4vw,28px);font-weight:900;letter-spacing:-.02em}
+.col h2 small{font-size:13px;font-weight:500;color:var(--dim)}
+.col h2 .count{margin-left:auto;font-family:var(--num);font-size:clamp(20px,2.2vw,26px);color:var(--c);text-shadow:0 0 14px var(--g)}
+
+.list{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px;overflow:hidden}
+.empty{margin:auto;color:var(--faint);font-size:15px}
+.more{text-align:center;color:var(--dim);font-size:14px;padding-top:2px}
+
+.card{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:16px;align-items:center;overflow:hidden;
+  padding:12px 16px;background:var(--card);border:1px solid var(--line);border-radius:12px;transition:opacity .25s,transform .25s}
+.no{font-family:var(--num);font-weight:700;font-size:clamp(40px,5.2vw,66px);line-height:.95;color:var(--c);
+  text-shadow:0 0 18px var(--g);font-variant-numeric:tabular-nums}
+.title{font-size:clamp(17px,1.9vw,23px);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{margin-top:2px;font-size:14px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub b{font-weight:700;color:#b9b9c0}
+.why{margin-top:5px;display:flex;align-items:flex-start;gap:7px;min-width:0;font-size:14px;line-height:1.4;color:#ffc2c2}
+.why em{flex:none;font-style:normal;font-size:12px;font-weight:900;color:#1a0505;background:var(--need);border-radius:5px;padding:1px 7px;margin-top:1px}
+.why span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-all}
+.meta{margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px}
+.time{font-family:var(--num);font-weight:600;font-variant-numeric:tabular-nums}
+.src{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 7px}
+.err{font-size:13px;font-weight:700;color:var(--need)}
+
+.list.dense{gap:7px}
+.list.dense .card{padding:8px 12px}
+.list.dense .no{font-size:clamp(28px,3.4vw,42px)}
+.list.dense .sub{display:none}
+.list.dense .meta{margin-top:2px}
+
+.col.need .card{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{border-color:var(--need);box-shadow:0 0 0 1px var(--need),0 0 26px rgba(255,75,75,.22)}}
+.card.fresh{animation:blink 1s steps(2,jump-none) 8}
+@keyframes blink{0%{background:rgba(56,224,123,.2);border-color:var(--done)}100%{background:var(--card)}}
+.card.leaving{opacity:0;transform:scale(.96)}
+/* 길게 누르기: 아래쪽 막대가 차오르면 카드가 내려감 */
+.card::after{content:"";position:absolute;left:0;bottom:0;height:3px;width:0;background:var(--text);opacity:.7}
+.card.holding::after{width:100%;transition:width .7s linear}
+
+#start{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  background:rgba(7,7,8,.94);text-align:center;padding:24px}
+#start h1{font-size:34px;font-weight:900}
+#start p{color:var(--dim);font-size:16px;line-height:1.7}
+#start .go{margin-top:8px;font:inherit;font-size:18px;font-weight:700;color:#111;background:var(--work);border:0;border-radius:999px;padding:14px 30px}
+#start.hide{display:none}
+
+@media (max-width:700px){ main{grid-template-columns:1fr} .clock{font-size:22px;min-width:0} .conn span,.toggle s{display:none} }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="lamp"></span>Claude 대기판</div>
+  <div class="conn" id="conn"><i></i><span>연결됨</span></div>
+  <button class="toggle" id="t-ding" type="button"><i></i>딩동 <s>완료</s></button>
+  <button class="toggle" id="t-beep" type="button"><i></i>삐삐 <s>확인 필요</s></button>
+  <button class="toggle" id="t-awake" type="button"><i></i>화면 유지</button>
+  <button class="toggle" id="t-links" type="button">연결 <b id="link-count">0</b></button>
+  <button class="toggle" id="t-full" type="button">전체화면</button>
+  <div class="clock" id="clock">--:--</div>
+</header>
+<div id="hint" role="status"></div>
+<div id="flash" aria-hidden="true"></div>
+<div id="links" hidden>
+  <div class="sheet" role="dialog" aria-label="연결된 대화">
+    <div class="sheet-head"><h3>연결된 대화</h3><button class="btn-x" id="links-close" type="button">닫기</button></div>
+    <p class="sheet-sub">대기판에 신호를 보내는 대화와 세션이에요. 연결을 끊으면 그 대화에서 오는 신호는 더 이상 받지 않아요. 다시 띄우려면 그 대화에서 <b>/board 이름</b>을 다시 부르면 돼요.</p>
+    <div id="link-list"></div>
+  </div>
+</div>
+
+<main>
+  <section class="col work"><h2>작업중<span class="count" id="c-working">0</span></h2><div class="list" id="l-working"></div></section>
+  <section class="col need"><h2>확인 필요<span class="count" id="c-needs">0</span></h2><div class="list" id="l-needs"></div></section>
+  <section class="col done"><h2>완료<small>탭하면 내려요</small><span class="count" id="c-done">0</span></h2><div class="list" id="l-done"></div></section>
+</main>
+
+<div id="start">
+  <h1>Claude 대기판</h1>
+  <p>화면을 탭하면 시작해요. 소리를 내고 화면이 꺼지지 않게 하려면 한 번 탭이 필요해요.<br>
+  위쪽 <b>딩동</b>(완료)·<b>삐삐</b>(확인 필요) 버튼으로 소리를 따로 켜고 끌 수 있어요.<br>
+  완료 카드는 <b>탭</b>하면 내려가고, 아무 카드나 <b>길게 누르면</b> 그 대화와의 연결까지 끊어요.</p>
+  <button class="go" type="button">시작</button>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const LABEL = { code: "CODE", app: "앱" };
+const EMPTY = { working: "돌아가는 작업 없음", needs: "기다리는 작업 없음", done: "완료된 작업 없음" };
+const MAX = 9, HOLD_MS = 700;
+
+/* 접근 키: 주소의 ?k=… 를 기억해 두고 요청마다 붙임 */
+let KEY = new URLSearchParams(location.search).get("k") || "";
+try { if (KEY) localStorage.setItem("cb-key", KEY); else KEY = localStorage.getItem("cb-key") || ""; } catch (e) {}
+const withKey = (path) => path + (KEY ? "?k=" + encodeURIComponent(KEY) : "");
+
+let offset = 0, sessions = [], prevStatus = null, sig = "", audio = null, wake = null;
+
+/* 소리 설정: 딩동은 기본 켜짐, 삐삐는 기본 꺼짐 (사무실용) */
+const sound = { ding: true, beep: false };
+try {
+  const d = localStorage.getItem("cb-ding"), b = localStorage.getItem("cb-beep");
+  if (d) sound.ding = d === "on";
+  if (b) sound.beep = b === "on";
+} catch (e) {}
+
+const now = () => Date.now() / 1000 + offset;
+const pad = (n) => String(n).padStart(3, "0");
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function dur(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return sec + "초";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + "분";
+  return Math.floor(m / 60) + "시간 " + (m % 60) + "분";
+}
+function timeText(s) {
+  const n = now();
+  if (s.status === "working") return dur(n - s.work_started) + "째 작업";
+  if (s.status === "needs") return dur(n - s.since) + "째 대기";
+  const ago = n - s.since;
+  return (ago < 60 ? "방금 완료" : dur(ago) + " 전 완료") + " · " + dur(s.since - s.work_started) + " 걸림";
+}
+
+function card(s) {
+  const c = el("div", "card");
+  c.append(el("div", "no", pad(s.no)));
+  const info = el("div", "info");
+  const hasTitle = s.title && s.title !== s.project;
+  info.append(el("div", "title", hasTitle ? s.title : s.project));
+  const sub = el("div", "sub");
+  if (hasTitle) { sub.append(el("b", null, s.project)); if (s.note) sub.append(document.createTextNode(" · " + s.note)); }
+  else if (s.note) sub.textContent = s.note;
+  if (sub.childNodes.length) info.append(sub);
+  if (s.status === "needs") {
+    const why = el("div", "why");
+    why.append(el("em", null, s.reason || "확인 필요"));
+    if (s.alert) why.append(el("span", null, s.alert));
+    info.append(why);
+  }
+  const meta = el("div", "meta");
+  const t = el("span", "time", timeText(s)); t._s = s; meta.append(t);
+  if (s.error) meta.append(el("span", "err", "오류로 멈춤"));
+  meta.append(el("span", "src", LABEL[s.source] || s.source));
+  info.append(meta); c.append(info);
+  if (s.status === "done" && now() - s.since < 12) c.classList.add("fresh");
+  wirePress(c, s);
+  return c;
+}
+
+/* 완료 카드는 탭, 모든 카드는 길게 누르면 내림 (지운 대화 정리용) */
+function wirePress(c, s) {
+  let timer = null, held = false;
+  const cancel = () => { clearTimeout(timer); timer = null; c.classList.remove("holding"); };
+  c.addEventListener("pointerdown", () => {
+    held = false; c.classList.add("holding");
+    timer = setTimeout(() => { held = true; cancel(); dismiss(s.id, c, true); }, HOLD_MS);
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => c.addEventListener(ev, cancel));
+  c.addEventListener("click", () => { if (!held && s.status === "done") dismiss(s.id, c); });
+  c.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+function render() {
+  const groups = { working: [], needs: [], done: [] };
+  for (const s of sessions) (groups[s.status] || []).push(s);
+  groups.working.sort((a, b) => a.work_started - b.work_started);
+  groups.needs.sort((a, b) => a.since - b.since);
+  groups.done.sort((a, b) => b.since - a.since);
+  for (const k of Object.keys(groups)) {
+    const list = $("#l-" + k), items = groups[k];
+    $("#c-" + k).textContent = items.length;
+    list.classList.toggle("dense", items.length > 4);
+    list.replaceChildren();
+    if (!items.length) { list.append(el("div", "empty", EMPTY[k])); continue; }
+    const shown = items.length > MAX ? items.slice(0, MAX - 1) : items;
+    shown.forEach((s) => list.append(card(s)));
+    if (shown.length < items.length) list.append(el("div", "more", "+" + (items.length - shown.length) + "개 더"));
+  }
+}
+
+function tick() {
+  const d = new Date(now() * 1000);
+  $("#clock").textContent = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  document.querySelectorAll(".time").forEach((t) => { if (t._s) t.textContent = timeText(t._s); });
+}
+
+function apply(list) {
+  const next = {};
+  for (const s of list) next[s.id] = s.status;
+  if (prevStatus) {
+    let ding = false, beep = false;
+    for (const s of list) {
+      if (prevStatus[s.id] === s.status) continue;
+      if (s.status === "done") ding = true;
+      if (s.status === "needs") beep = true;
+    }
+    if (beep && sound.beep) alertBeep();
+    if (ding && sound.ding) setTimeout(dingDong, beep && sound.beep ? 900 : 0);
+    if (beep) flash("red");
+    if (ding) setTimeout(() => flash("green"), beep ? 2700 : 0);
+  }
+  prevStatus = next;
+  sessions = list;
+  const nextSig = JSON.stringify(list.map((s) => [s.id, s.no, s.status, s.project, s.title, s.note, s.reason, s.alert, s.error, s.since, s.work_started]));
+  if (nextSig !== sig) { sig = nextSig; render(); }
+}
+
+function setConn(ok, why) {
+  $("#conn").classList.toggle("off", !ok);
+  $("#conn span").textContent = ok ? "연결됨" : (why || "서버 연결 끊김");
+}
+
+async function poll() {
+  try {
+    const r = await fetch(withKey("/state"), { cache: "no-store" });
+    if (r.status === 403) { setConn(false, "주소에 키가 없어요"); throw 0; }
+    const d = await r.json();
+    offset = d.now - Date.now() / 1000;
+    setConn(true);
+    apply(d.sessions || []);
+  } catch (e) { if (e !== 0) setConn(false); }
+  setTimeout(poll, 700);
+}
+
+/* 완료 카드 탭: 카드만 내림 / 길게 누르기: 연결까지 끊음 */
+async function dismiss(id, node, cut) {
+  if (node) node.classList.add("leaving");
+  sessions = sessions.filter((s) => s.id !== id);
+  if (prevStatus) delete prevStatus[id];
+  setTimeout(() => { sig = ""; apply(sessions); }, 250);
+  try { await fetch(withKey(cut ? "/disconnect" : "/dismiss"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }); } catch (e) {}
+  if (cut) { if (cut !== "panel") showHint("연결을 끊었어요. 다시 띄우려면 그 대화에서 <b>/board 이름</b>을 부르세요."); loadLinks(); }
+}
+
+/* ---- 화면 전체 깜빡임 ---- */
+let flashTimer = null;
+function flash(color) {
+  const f = $("#flash");
+  f.className = ""; void f.offsetWidth; f.className = color + " go";
+  clearTimeout(flashTimer); flashTimer = setTimeout(() => (f.className = ""), 2600);
+}
+
+/* ---- 연결 탭 ---- */
+let links = [];
+const SRC = { code: "CODE", app: "앱" };
+function ago(t) { const d = Math.max(0, now() - t); return d < 60 ? "방금" : dur(d) + " 전"; }
+const STATUS_KO = { working: "작업중", needs: "확인 필요", done: "완료" };
+function renderLinks() {
+  $("#link-count").textContent = links.length;
+  if ($("#links").hidden) return;
+  const box = $("#link-list"); box.replaceChildren();
+  if (!links.length) { box.append(el("div", "link-empty", "연결된 대화가 없어요")); return; }
+  for (const l of links) {
+    const row = el("div", "link");
+    row.append(el("div", "nm", l.title || l.project || l.id));
+    const mt = el("div", "mt");
+    const dot = el("span", "dot " + (l.has_card ? l.status : "")); mt.append(dot);
+    mt.append(document.createTextNode((l.has_card ? STATUS_KO[l.status] || "" : "카드 없음") + " · " + (SRC[l.source] || l.source) + " · 마지막 신호 " + ago(l.last)));
+    if (l.title && l.project && l.project !== l.title) mt.append(document.createTextNode(" · " + l.project));
+    row.append(mt);
+    const b = el("button", null, "연결 끊기"); b.type = "button";
+    b.addEventListener("click", () => {
+      if (!b.classList.contains("sure")) { b.classList.add("sure"); b.textContent = "정말 끊기"; setTimeout(() => { b.classList.remove("sure"); b.textContent = "연결 끊기"; }, 3000); return; }
+      links = links.filter((x) => x.id !== l.id); renderLinks();
+      dismiss(l.id, null, "panel");
+    });
+    row.append(b); box.append(row);
+  }
+}
+async function loadLinks() {
+  try { const r = await fetch(withKey("/links"), { cache: "no-store" }); if (r.ok) { links = (await r.json()).links || []; renderLinks(); } } catch (e) {}
+}
+$("#t-links").addEventListener("click", () => { $("#links").hidden = false; renderLinks(); loadLinks(); });
+$("#links-close").addEventListener("click", () => { $("#links").hidden = true; });
+$("#links").addEventListener("click", (e) => { if (e.target.id === "links") $("#links").hidden = true; });
+setInterval(loadLinks, 4000);
+
+/* ---- 소리 ---- */
+function tone(freq, start, len, type = "sine", vol = 0.28) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, start);
+  g.gain.exponentialRampToValueAtTime(vol, start + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, start + len);
+  o.connect(g); g.connect(audio.destination);
+  o.start(start); o.stop(start + len + 0.05);
+}
+function ready() { if (!audio) return false; if (audio.state !== "running") audio.resume(); return true; }
+function dingDong() { if (!ready()) return; const t = audio.currentTime + 0.05; tone(659.25, t, 1.1); tone(523.25, t + 0.45, 1.5); }
+function alertBeep() { if (!ready()) return; const t = audio.currentTime + 0.05; tone(988, t, 0.16, "square", 0.1); tone(988, t + 0.24, 0.16, "square", 0.1); tone(1319, t + 0.48, 0.3, "square", 0.1); }
+
+function paintToggles() {
+  $("#t-ding").classList.toggle("on", sound.ding);
+  $("#t-beep").classList.toggle("on", sound.beep);
+  $("#t-ding").setAttribute("aria-pressed", sound.ding);
+  $("#t-beep").setAttribute("aria-pressed", sound.beep);
+}
+function wireToggle(key, btn, preview) {
+  btn.addEventListener("click", () => {
+    sound[key] = !sound[key]; paintToggles();
+    try { localStorage.setItem("cb-" + key, sound[key] ? "on" : "off"); } catch (e) {}
+    if (sound[key]) { unlockAudio(); preview(); }   // 켤 때 한 번 들려줌
+  });
+}
+wireToggle("ding", $("#t-ding"), () => dingDong());
+wireToggle("beep", $("#t-beep"), () => alertBeep());
+
+function unlockAudio() {
+  try {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    audio.resume();
+    tone(440, audio.currentTime, 0.02, "sine", 0.0002);
+  } catch (e) {}
+}
+
+/* ---- 화면 꺼짐 방지 ---- */
+/* ---- 화면 꺼짐 방지 ----
+   1) Wake Lock API (Safari 16.4+, 홈 화면 앱 iOS 18.4+)
+   2) 지원 안 되는 브라우저(iPad Chrome 등): 소리 없는 아주 작은 영상을 계속 재생 */
+let keepVideo = null;
+function startKeepVideo() {
+  if (!keepVideo) {
+    keepVideo = document.createElement("video");
+    keepVideo.src = "data:video/mp4;base64,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b21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAADmWIhAW///8PRQABT3+AARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcAAAAGQZo4CvqAARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAc=";
+    keepVideo.muted = true; keepVideo.loop = true; keepVideo.playsInline = true;
+    keepVideo.setAttribute("playsinline", ""); keepVideo.setAttribute("muted", ""); keepVideo.setAttribute("webkit-playsinline", "");
+    keepVideo.style.cssText = "position:fixed;right:0;bottom:0;width:4px;height:4px;opacity:.02;pointer-events:none;z-index:-1";
+    keepVideo.addEventListener("playing", paintAwake);
+    keepVideo.addEventListener("pause", paintAwake);
+    document.body.append(keepVideo);
+  }
+  const p = keepVideo.play(); if (p && p.catch) p.catch(() => {});
+}
+async function keepAwake() {
+  startKeepVideo();
+  try {
+    if ("wakeLock" in navigator && !wake) {
+      wake = await navigator.wakeLock.request("screen");
+      wake.addEventListener("release", () => { wake = null; paintAwake(); });
+    }
+  } catch (e) {}
+  paintAwake();
+}
+function awakeOn() { return !!wake || (keepVideo && !keepVideo.paused); }
+function paintAwake() {
+  const on = awakeOn();
+  $("#t-awake").classList.toggle("on", on);
+  $("#t-awake").lastChild.textContent = on ? "화면 유지 중" : "화면 유지 꺼짐";
+}
+/* 영상이 멈췄으면 주기적으로 다시 재생 */
+setInterval(() => { if (keepVideo && keepVideo.paused) startKeepVideo(); else paintAwake(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); if (audio) audio.resume(); } });
+document.addEventListener("pointerdown", () => { unlockAudio(); keepAwake(); }, { once: true });
+$("#t-awake").addEventListener("click", () => {
+  keepAwake();
+  setTimeout(() => {
+    if (!awakeOn() && location.protocol !== "https:") showHint("화면 유지는 <b>https 주소</b>에서만 돼요. 맥의 install.py가 알려준 https://… 주소로 열어 주세요.");
+    else if (!awakeOn()) showHint("이 브라우저는 화면 유지를 허용하지 않아요. iPad 설정 → 디스플레이 및 밝기 → 자동 잠금 → <b>안 함</b>으로 바꿔 주세요.");
+    else showHint("화면이 꺼지지 않게 유지하고 있어요. 그래도 꺼지면 iPad 설정 → 디스플레이 및 밝기 → 자동 잠금 → <b>안 함</b>이 가장 확실해요.");
+  }, 600);
+});
+
+/* ---- 전체화면 ---- */
+function isFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement) || matchMedia("(display-mode: standalone)").matches || navigator.standalone; }
+$("#t-full").addEventListener("click", async () => {
+  const el = document.documentElement;
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      return;
+    }
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) { await req.call(el); return; }
+  } catch (e) {}
+  showHint("이 브라우저(iPad Chrome 등)는 전체화면을 지원하지 않아요.<br><b>Safari</b>로 이 주소를 열고 공유 버튼 → <b>홈 화면에 추가</b>를 누른 뒤, 홈 화면 아이콘으로 열면 주소창 없이 전체화면으로 떠요.");
+});
+function paintFull() { $("#t-full").classList.toggle("on", isFull()); }
+document.addEventListener("fullscreenchange", paintFull);
+document.addEventListener("webkitfullscreenchange", paintFull);
+
+let hintTimer = null;
+function showHint(html) {
+  const h = $("#hint"); h.innerHTML = html; h.classList.add("show");
+  clearTimeout(hintTimer); hintTimer = setTimeout(() => h.classList.remove("show"), 9000);
+}
+$("#hint").addEventListener("click", () => $("#hint").classList.remove("show"));
+
+$("#start").addEventListener("click", () => { unlockAudio(); keepAwake(); $("#start").classList.add("hide"); });
+
+paintToggles();
+loadLinks();
+paintAwake();
+paintFull();
+render();
+tick();
+setInterval(tick, 1000);
+poll();
+</script>
+</body>
+</html>
