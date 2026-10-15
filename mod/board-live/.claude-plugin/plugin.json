@@ -1,1 +1,1 @@
-{ "name": "board-live", "version": "0.3.0", "description": "매 턴 시작·끝에 이 대화의 상태를 맥의 Claude 대기판으로 보냄" }
+{ "name": "board-live", "version": "0.4.0", "description": "매 턴 시작·끝에 이 대화의 상태를 맥의 Claude 대기판으로 보냄" }
