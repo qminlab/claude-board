@@ -34,6 +34,25 @@ function shortTool(name: string) {
   return parts[parts.length - 1] || name
 }
 
+// 권한 창에 뜬 도구를 사람이 읽기 쉬운 말로
+function describe(tool: string, input: unknown) {
+  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const host = (u: unknown) => {
+    const m = /^https?:\/\/([^/?#]+)/.exec(String(u ?? ''))
+    return m ? m[1] : ''
+  }
+  if (tool === 'WebFetch') return clip(`웹페이지 가져오기 ${host(i.url)}`.trim())
+  if (tool === 'WebSearch') return clip(`웹 검색 ${String(i.query ?? '')}`.trim())
+  if (tool === 'Bash') return clip(`명령 실행: ${String(i.command ?? '')}`)
+  if (/^(Write|Edit|NotebookEdit)$/.test(tool)) return clip(`파일 수정: ${String(i.file_path ?? '')}`)
+  if (/request_folder_access/.test(tool)) return '맥 폴더 접근 허용'
+  if (/request_delete_permission/.test(tool)) return '맥 파일 삭제 허용'
+  if (/computer|request_access|request_full_control/.test(tool)) return '컴퓨터 조작 허용'
+  if (/claude-in-chrome|Claude_Browser/.test(tool)) return clip(`브라우저 조작: ${shortTool(tool)}`)
+  if (tool === 'AskUserQuestion') return '선택지 질문'
+  return clip(shortTool(tool))
+}
+
 // 답이 끝나면 언제나 완료. 다음 단계를 묻는 질문으로 끝나도 완료이고, 메모에 그 질문을 보여 준다.
 function judge(answer: string): { status: Status; extra: Extra } {
   const ls = lines(answer)
@@ -79,7 +98,7 @@ export const register: Register = on => {
   // 권한 승인 창이 뜰 때
   on('classic.PermissionRequest', async ($, e, next) => {
     if (!(e as { agent_id?: string }).agent_id) {
-      send($, 'needs', { reason: '권한 승인', note: clip(shortTool(String(e.tool_name))) })
+      send($, 'needs', { reason: '권한 승인', note: describe(String(e.tool_name), e.tool_input) })
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -89,10 +108,20 @@ export const register: Register = on => {
     const tool = String(e.tool)
     const mine = !e.agentId && !OWN_TOOL.test(tool)
     if (mine && ASK_TOOLS.test(tool)) {
-      send($, 'needs', { reason: /AskUserQuestion/.test(tool) ? '선택 필요' : '권한 승인', note: clip(shortTool(tool)) })
+      send($, 'needs', { reason: /AskUserQuestion/.test(tool) ? '선택 필요' : '권한 승인', note: describe(tool, e) })
     }
     const r = await next(e)
     if (mine && current === 'needs') send($, 'working', {})
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // 권한 판정이 "사용자에게 묻기"로 나오면(웹페이지 가져오기 확인 창 등) 확인 필요
+  on('tool.check', async ($, e, next) => {
+    const r = await next(e)
+    const tool = String(e.tool)
+    if (r.decision === 'ask' && e.tool_use_id && !e.agentId && !OWN_TOOL.test(tool) && current !== 'needs') {
+      send($, 'needs', { reason: '권한 승인', note: describe(tool, e.input) })
+    }
     return r
   }).catch(($, e, next) => next(e))
 
