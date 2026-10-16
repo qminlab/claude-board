@@ -37,6 +37,7 @@ SRV_NAMES = os.path.join(CERT_DIR, "server.names")
 
 DONE_TTL = 60 * 60          # 완료 카드는 1시간 뒤 자동으로 내림
 STALE_TTL = 3 * 60 * 60     # 3시간 동안 아무 신호 없는 카드는 정리 (지운 대화 등)
+WORKING_STALE_TTL = 6 * 60 * 60  # 작업중 카드는 긴 작업일 수 있어서 6시간까지 기다림
 LINK_TTL = 24 * 60 * 60     # 하루 동안 신호 없는 연결은 목록에서 정리
 BLOCK_TTL = 7 * 24 * 60 * 60
 STATUSES = ("working", "needs", "done")
@@ -139,6 +140,7 @@ def upsert(sid, source, status, project=None, title=None, note=None, reason=None
     s["error"] = bool(error)
     link = state["links"].setdefault(sid, {"id": sid, "source": source, "first": now})
     link.update({"title": s["title"], "project": s["project"], "status": status, "last": now})
+    link.pop("ended", None)
 
 
 def touch(sid):
@@ -169,12 +171,25 @@ def ended(sid):
         state["links"].pop(sid, None)
 
 
+def app_ended(sid):
+    """앱 대화의 '세션 종료' 신호.
+
+    앱 대화는 대화가 길어져 맥락을 정리하거나, 잠시 쉬는 사이 작업 환경이 다시 켜질 때도 이 신호가 와요.
+    대화가 지워진 것과 구별할 수 없어서, 카드와 연결을 바로 지우지 않고 표시만 해 둬요.
+    정말 지운 대화면 신호가 끊기니 오래된 카드·연결 정리(cleanup)가 알아서 치워요.
+    """
+    link = state["links"].get(sid)
+    if link is not None:
+        link["ended"] = time.time()
+    print(f"세션 종료 신호: {sid} (카드·연결은 유지)", flush=True)
+
+
 def cleanup():
     now = time.time()
     for sid, s in list(state["sessions"].items()):
         if s["status"] == "done" and now - s["since"] > DONE_TTL:
             remove(sid)
-        elif now - s.get("updated", s["since"]) > STALE_TTL:
+        elif now - s.get("updated", s["since"]) > (WORKING_STALE_TTL if s["status"] == "working" else STALE_TTL):
             remove(sid)
     for sid, link in list(state["links"].items()):
         if now - link.get("last", 0) > LINK_TTL:
@@ -314,7 +329,7 @@ def handle_event(data, source="app"):
         disconnect(sid) if data.get("disconnect") else remove(sid)
         return True
     if status == "ended":
-        ended(sid)
+        app_ended(sid) if source == "app" else ended(sid)
         return True
     if sid in state["blocked"]:              # 대기판에서 연결을 끊은 대화
         return True
@@ -415,7 +430,7 @@ def handle_relay(data, sid, source):
         return ts < r["turn"] or (r["closed"] >= r["turn"] and ts <= r["closed"])
 
     if ev == "ended":
-        ended(sid)
+        app_ended(sid)
         rt.pop(sid, None)
     elif ev == "start":
         if ts < r["turn"]:
