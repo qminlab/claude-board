@@ -35,10 +35,10 @@ SRV_KEY = os.path.join(CERT_DIR, "server.key")
 SRV_CRT = os.path.join(CERT_DIR, "server.crt")
 SRV_NAMES = os.path.join(CERT_DIR, "server.names")
 
-DONE_TTL = 60 * 60          # 완료 카드는 1시간 뒤 자동으로 내림
+DONE_TTL = 60 * 60          # 완료 카드는 1시간 뒤 화면에서만 숨김 (연결은 유지, 새 신호가 오면 다시 뜸)
 STALE_TTL = 3 * 60 * 60     # 3시간 동안 아무 신호 없는 카드는 정리 (지운 대화 등)
 WORKING_STALE_TTL = 6 * 60 * 60  # 작업중 카드는 긴 작업일 수 있어서 6시간까지 기다림
-LINK_TTL = 24 * 60 * 60     # 하루 동안 신호 없는 연결은 목록에서 정리
+LINK_TTL = 30 * 24 * 60 * 60  # 연결은 시간이 지나도 끊지 않음 (30일 동안 신호가 없을 때만 목록에서 정리)
 BLOCK_TTL = 7 * 24 * 60 * 60
 STATUSES = ("working", "needs", "done")
 

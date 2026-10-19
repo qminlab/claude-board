@@ -332,8 +332,9 @@ function renderLinks() {
     const row = el("div", "link");
     row.append(el("div", "nm", l.title || l.project || l.id));
     const mt = el("div", "mt");
-    const dot = el("span", "dot " + (l.has_card ? l.status : "")); mt.append(dot);
-    mt.append(document.createTextNode((l.has_card ? STATUS_KO[l.status] || "" : "카드 없음") + " · " + (SRC[l.source] || l.source) + " · 마지막 신호 " + ago(l.last)));
+    const dot = el("span", "dot " + (l.status || "")); mt.append(dot);
+    const st = (STATUS_KO[l.status] || "") + (l.has_card ? "" : " · 화면에서 숨김");
+    mt.append(document.createTextNode(st + " · " + (SRC[l.source] || l.source) + " · 마지막 신호 " + ago(l.last)));
     if (l.title && l.project && l.project !== l.title) mt.append(document.createTextNode(" · " + l.project));
     row.append(mt);
     const b = el("button", null, "연결 끊기"); b.type = "button";
