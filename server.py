@@ -364,7 +364,7 @@ def handle_event(data, source="app"):
 # 장치는 일어난 일만 그대로 보내고(턴 시작·권한 판정·도구 실행 끝·턴 끝), 무엇을 어느 칸에 둘지는 여기서 정한다.
 # 그래서 규칙을 바꿀 때 이 파일만 고치면 모든 대화에 바로 적용된다.
 GRACE = 10.0           # 같은 작업에서 이만큼 막혀 있어야 확인 필요로 옮김 (잠깐 묻고 바로 넘어가는 건 깜빡임만 생겨서 무시)
-LEARN_WITHIN = 4.0     # 승인 판정 뒤 이 시간 안에 실행이 끝나면 미리 허용된 도구로 기억
+LEARN_WITHIN = GRACE   # 확인 필요로 넘어가기 전에 실행이 끝났으면 미리 허용된 도구(묶음)로 기억
 LEARNED_GRACE = 45.0   # 미리 허용된 걸로 기억된 도구는 이만큼 기다림 (오래 걸리는 명령도 안 걸리게)
 ASK_TOOLS = re.compile(r"request_folder_access|request_access|request_delete_permission|request_full_control|AskUserQuestion")
 SKIP_LINE = ("💡", "```", "Sources", "출처")
@@ -420,9 +420,28 @@ def answer_note(head, tail):
     return clip(last if bare.endswith(("?", "？")) else first)
 
 
+def family(tool):
+    """같은 묶음의 도구는 한꺼번에 기억 (브라우저 도구 하나가 미리 허용돼 있으면 나머지 브라우저 도구도 같음).
+    mcp__claude-in-chrome__navigate → mcp__claude-in-chrome__*
+    mcp__remote-devices__Claude_Browser__navigate → mcp__remote-devices__Claude_Browser__*"""
+    parts = tool.split("__")
+    if tool.startswith("mcp__") and len(parts) >= 3:
+        return "__".join(parts[:-1]) + "__*"
+    return tool
+
+
+# 처음부터 미리 허용된 걸로 보는 묶음: 브라우저 도구는 한 번에 여러 동작을 해서 10초를 넘기기 쉬워요
+DEFAULT_AUTO = {"mcp__claude-in-chrome__*", "mcp__remote-devices__Claude_Browser__*"}
+
+
+def learned(tool):
+    known = state.get("auto_tools", {})
+    return tool in known or family(tool) in known or family(tool) in DEFAULT_AUTO
+
+
 def learn(tool):
     if tool and not ASK_TOOLS.search(tool):
-        state.setdefault("auto_tools", {})[tool] = time.time()
+        state.setdefault("auto_tools", {})[family(tool)] = time.time()
 
 
 def handle_relay(data, sid, source):
@@ -473,7 +492,7 @@ def handle_relay(data, sid, source):
         if ev == "question":
             wait, reason = GRACE, R_CHOICE
         else:
-            wait, reason = (LEARNED_GRACE if tool in state.get("auto_tools", {}) else GRACE), R_PERMISSION
+            wait, reason = (LEARNED_GRACE if learned(tool) and not ASK_TOOLS.search(tool) else GRACE), R_PERMISSION
         r["pending"][key] = {"tool": tool, "ts": ts, "due": time.time() + wait, "shown": False,
                              "note": note, "reason": reason, "project": project, "title": title}
     elif ev == "ran":
