@@ -339,6 +339,15 @@ def handle_event(data, source="app"):
     if status not in STATUSES:
         return False
     note = data.get("note")
+    deferred.pop(sid, None)
+    cur = state["sessions"].get(sid)
+    if (source == "app" and status == "needs" and not data.get("error")
+            and cur is not None and cur["status"] == "working"):
+        deferred[sid] = {"due": time.time() + GRACE, "args": {
+            "project": clip(data.get("project"), 30) or None, "title": clip(data.get("title"), 40) or None,
+            "reason": clip(data.get("reason"), 16) or None, "alert": clip(note)}}
+        touch(sid)
+        return True
     upsert(
         sid, source, status,
         project=clip(data.get("project"), 30) or None,
@@ -354,11 +363,13 @@ def handle_event(data, source="app"):
 # ---------- 앱 대화 자동 기록 장치 (board-live 1.0~) ----------
 # 장치는 일어난 일만 그대로 보내고(턴 시작·권한 판정·도구 실행 끝·턴 끝), 무엇을 어느 칸에 둘지는 여기서 정한다.
 # 그래서 규칙을 바꿀 때 이 파일만 고치면 모든 대화에 바로 적용된다.
-GRACE = 4.0            # 권한 판정 "묻기"가 나와도 이 시간 안에 실행이 끝나면 미리 허용된 도구로 보고 확인 필요로 안 올림
+GRACE = 10.0           # 같은 작업에서 이만큼 막혀 있어야 확인 필요로 옮김 (잠깐 묻고 바로 넘어가는 건 깜빡임만 생겨서 무시)
+LEARN_WITHIN = 4.0     # 승인 판정 뒤 이 시간 안에 실행이 끝나면 미리 허용된 도구로 기억
 LEARNED_GRACE = 45.0   # 미리 허용된 걸로 기억된 도구는 이만큼 기다림 (오래 걸리는 명령도 안 걸리게)
 ASK_TOOLS = re.compile(r"request_folder_access|request_access|request_delete_permission|request_full_control|AskUserQuestion")
 SKIP_LINE = ("💡", "```", "Sources", "출처")
 rt = {}                # 대화별 진행 상황(메모리): 턴 시작 시각, 승인 대기 중인 도구 등
+deferred = {}          # 직접 기록된 확인 필요(예전 장치·수동 기록)를 잠시 미뤄 둔 것
 
 
 def strip_tags(text):
@@ -453,19 +464,18 @@ def handle_relay(data, sid, source):
         if late():
             return
         if key in r["ran"]:                 # 실행 끝 신호가 먼저 도착함
-            if r["ran"].pop(key) - ts < GRACE * 1000:
+            if r["ran"].pop(key) - ts < LEARN_WITHIN * 1000:
                 learn(tool)
             return
         if any(p["tool"] == tool for p in r["pending"].values()):
             return                          # 같은 도구의 두 번째 판정 신호 (중복)
         note = friendly(tool, data.get("input"))
         if ev == "question":
-            r["pending"][key] = {"tool": tool, "ts": ts, "due": 0, "shown": True}
-            upsert(sid, source, "needs", project, title, reason="선택 필요", alert=note)
-            return
-        wait = LEARNED_GRACE if tool in state.get("auto_tools", {}) else GRACE
+            wait, reason = GRACE, R_CHOICE
+        else:
+            wait, reason = (LEARNED_GRACE if tool in state.get("auto_tools", {}) else GRACE), R_PERMISSION
         r["pending"][key] = {"tool": tool, "ts": ts, "due": time.time() + wait, "shown": False,
-                             "note": note, "project": project, "title": title}
+                             "note": note, "reason": reason, "project": project, "title": title}
     elif ev == "ran":
         hit = [k for k, p in r["pending"].items() if k == key or p["tool"] == tool]
         if not hit:
@@ -474,7 +484,7 @@ def handle_relay(data, sid, source):
             return
         for k in hit:
             p = r["pending"].pop(k)
-            if not p["shown"] and ts - p["ts"] < GRACE * 1000:
+            if not p["shown"] and ts - p["ts"] < LEARN_WITHIN * 1000:
                 learn(tool)
         s = state["sessions"].get(sid)
         if s and s["status"] == "needs" and not any(p["shown"] for p in r["pending"].values()) and not late():
@@ -492,8 +502,17 @@ def check_pending():
             p["shown"] = True
             s = state["sessions"].get(sid)
             if s and s["status"] == "working":
-                upsert(sid, s["source"], "needs", p.get("project"), p.get("title"), reason=R_PERMISSION, alert=p["note"])
+                upsert(sid, s["source"], "needs", p.get("project"), p.get("title"),
+                       reason=p.get("reason") or R_PERMISSION, alert=p["note"])
                 changed = True
+    for sid, d in list(deferred.items()):    # 직접 기록된 확인 필요도 10초 버티면 올림
+        if now < d["due"]:
+            continue
+        deferred.pop(sid)
+        s = state["sessions"].get(sid)
+        if s and s["status"] == "working":
+            upsert(sid, s["source"], "needs", **d["args"])
+            changed = True
     return changed
 
 
