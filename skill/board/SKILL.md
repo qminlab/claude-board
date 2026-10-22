@@ -31,7 +31,7 @@ description: "지금 대화를 아이패드 Claude 대기판에 이름과 함께
 
 `board-live/.claude-plugin/plugin.json`
 ```json
-{ "name": "board-live", "version": "1.1.0", "description": "이 대화에서 일어난 일을 맥의 Claude 대기판으로 보냄 (판단은 맥 서버가 함)" }
+{ "name": "board-live", "version": "1.2.0", "description": "이 대화에서 일어난 일을 맥의 Claude 대기판으로 보냄 (판단은 맥 서버가 함)" }
 ```
 
 `board-live/hooks/hooks.json`
@@ -53,6 +53,7 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 // 그래서 규칙이 바뀌어도 이 파일은 그대로 두고 맥의 server.py만 고치면 모든 대화에 적용된다.
 // 설정(id·title·project)은 모드 폴더의 board.json. 없거나 off면 아무것도 보내지 않는다.
 // 1.1: 승인 판정의 자세한 내용과 실제 실행 시간도 보냄.
+// 1.2: 턴마다 turnId와, 턴이 끝날 때 아직 돌고 있는 백그라운드 에이전트 수도 보냄.
 type Cfg = { id: string; title?: string; project?: string; off?: boolean }
 type Signal = Record<string, unknown>
 
@@ -110,12 +111,22 @@ function finished($: Engine, e: Finished) {
   send($, 'ran', { use: id, tool, run_ms: typeof e.duration_ms === 'number' ? e.duration_ms : null })
 }
 
+// 턴이 끝나도 아직 돌고 있는 백그라운드 에이전트(메인 대화가 띄운 것) 수
+async function busyAgents($: Engine) {
+  try {
+    const list = await $.agent.list()
+    return list.filter(a => !a.parentId && (a.status === 'running' || a.status === 'pending' || a.status === 'waiting')).length
+  } catch {
+    return 0
+  }
+}
+
 export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
     if (!e.agentId) {
       asked.clear()
-      send($, 'start', { text: cut(e.text, 300) })
+      send($, 'start', { text: cut(e.text, 300), turn: e.turnId })
     }
     return r
   })
@@ -183,7 +194,8 @@ export const register: Register = on => {
       asked.clear()
       const kind = e.isAborted ? 'aborted' : e.reason !== 'answer' ? 'error' : 'answer'
       const text = kind === 'answer' ? String(e.answer ?? '') : ''
-      send($, 'end', { kind, head: text.slice(0, 600), tail: text.slice(-600) })
+      const bg = await busyAgents($)
+      send($, 'end', { kind, head: text.slice(0, 600), tail: text.slice(-600), turn: e.turnId, bg })
     }
     return r
   })
@@ -214,7 +226,7 @@ export const register: Register = on => {
 
 ## 4. 업데이트·이름 바꾸기·내리기
 
-- "/board 업데이트": 이미 등록된 대화의 장치를 최신으로 바꾼다. `plugin-authoring` 스킬을 불러 모드 폴더를 확인한다. `board-live/.claude-plugin/plugin.json`의 version이 이미 1.1.0 이상이면, 규칙은 맥 서버에 있으므로 "이 대화는 이미 최신 장치예요"라고 한 줄로 알리고 아무 파일도 바꾸지 않는다(완료 기록도 따로 하지 않는다). 그보다 낮으면 `board.json`은 그대로 둔 채 나머지 장치 파일 3개만 위 내용으로 덮어쓴다. `board.json`이 없으면 1절 등록을 처음부터 한다. 파일을 바꿨으면 최종 답변 바로 전, 맨 마지막 동작으로 2절 방법으로 `done`(note: "대기판 장치 업데이트")을 기록하고, 사용자에게 "대기판 장치를 최신으로 바꿨어요. 앞으로는 이 대화에서 다시 업데이트할 필요 없어요"라고 한 줄로 알린다. Enable 창이 다시 뜨면 눌러 달라고 덧붙인다.
+- "/board 업데이트": 이미 등록된 대화의 장치를 최신으로 바꾼다. `plugin-authoring` 스킬을 불러 모드 폴더를 확인한다. `board-live/.claude-plugin/plugin.json`의 version이 이미 1.2.0 이상이면, 규칙은 맥 서버에 있으므로 "이 대화는 이미 최신 장치예요"라고 한 줄로 알리고 아무 파일도 바꾸지 않는다(완료 기록도 따로 하지 않는다). 그보다 낮으면 `board.json`은 그대로 둔 채 나머지 장치 파일 3개만 위 내용으로 덮어쓴다. `board.json`이 없으면 1절 등록을 처음부터 한다. 파일을 바꿨으면 최종 답변 바로 전, 맨 마지막 동작으로 2절 방법으로 `done`(note: "대기판 장치 업데이트")을 기록하고, 사용자에게 "대기판 장치를 최신으로 바꿨어요. 앞으로는 이 대화에서 다시 업데이트할 필요 없어요"라고 한 줄로 알린다. Enable 창이 다시 뜨면 눌러 달라고 덧붙인다.
 - 대기판에 보이는 이름은 아이패드 연결 탭의 "이름" 버튼으로도 바꿀 수 있다(그 이름이 대화 쪽 이름보다 우선한다).
 - "대기판 이름 ○○로 바꿔줘": `board.json`의 title과 project를 바꾸고, 최종 답변 바로 전 맨 마지막 동작으로 2절 방법으로 `done`을 새 이름으로 기록한다.
 - "대기판에서 내려줘", "/board 끝": 2절 방법으로 `{"status": "remove", "disconnect": true}`를 기록하고, `board.json`에 `"off": true`를 넣는다. 이후 이 대화에서는 기록하지 않는다.

@@ -503,13 +503,32 @@ def handle_relay(data, sid, source):
         if ts < r["turn"]:
             return
         r.update(turn=ts, closed=0, pending={}, ran={})
+        if data.get("turn"):                 # 장치 1.2+: 진행 중인 턴 목록
+            r.setdefault("active", {})[str(data["turn"])] = ts
         note = clip(strip_tags(data.get("text")))
+        print(f"턴 시작: {sid} {str(data.get('turn') or '')[:8]} {note[:30]!r}", flush=True)
         upsert(sid, source, "working", project, title, note=note or "")
     elif ev == "end":
-        if ts < r["turn"]:
+        if ts < r["turn"] and not data.get("turn"):
             return
-        r.update(closed=ts, pending={}, ran={})
         kind = data.get("kind")
+        tid = str(data.get("turn") or "")
+        if tid:
+            # 앞 명령이 끝나는 순간 뒤 명령이 이미 시작된 경우(메시지를 이어서 보냈을 때):
+            # 이 턴보다 나중에 시작한 턴이 아직 돌고 있으면 완료로 옮기지 않음
+            active = r.setdefault("active", {})
+            started = active.pop(tid, None)
+            newer = [t for t, t0 in active.items() if (started is None or t0 > started) and ts - t0 < 6 * 3600 * 1000]
+            for t in [t for t in active if t not in newer]:
+                active.pop(t)                # 끝 신호를 잃어버린 오래된 턴은 정리
+            print(f"턴 끝: {sid} {tid[:8]} {kind} 남은 턴 {len(newer)} 백그라운드 {data.get('bg') or 0}", flush=True)
+            if newer and kind == "answer":
+                touch(sid)
+                return
+        r.update(closed=ts, pending={}, ran={})
+        if kind == "answer" and (data.get("bg") or 0) > 0:
+            upsert(sid, source, "working", project, title, note=f"백그라운드 작업 {data.get('bg')}개 진행 중")
+            return
         if kind == "aborted":
             upsert(sid, source, "needs", project, title, reason="중단됨", alert="응답 도중 멈췄어요")
         elif kind == "error":

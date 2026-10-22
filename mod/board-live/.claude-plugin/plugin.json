@@ -1,1 +1,1 @@
-{ "name": "board-live", "version": "1.1.0", "description": "이 대화에서 일어난 일을 맥의 Claude 대기판으로 보냄 (판단은 맥 서버가 함)" }
+{ "name": "board-live", "version": "1.2.0", "description": "이 대화에서 일어난 일을 맥의 Claude 대기판으로 보냄 (판단은 맥 서버가 함)" }

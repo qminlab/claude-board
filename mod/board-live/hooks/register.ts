@@ -5,6 +5,7 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 // 그래서 규칙이 바뀌어도 이 파일은 그대로 두고 맥의 server.py만 고치면 모든 대화에 적용된다.
 // 설정(id·title·project)은 모드 폴더의 board.json. 없거나 off면 아무것도 보내지 않는다.
 // 1.1: 승인 판정의 자세한 내용과 실제 실행 시간도 보냄.
+// 1.2: 턴마다 turnId와, 턴이 끝날 때 아직 돌고 있는 백그라운드 에이전트 수도 보냄.
 type Cfg = { id: string; title?: string; project?: string; off?: boolean }
 type Signal = Record<string, unknown>
 
@@ -62,12 +63,22 @@ function finished($: Engine, e: Finished) {
   send($, 'ran', { use: id, tool, run_ms: typeof e.duration_ms === 'number' ? e.duration_ms : null })
 }
 
+// 턴이 끝나도 아직 돌고 있는 백그라운드 에이전트(메인 대화가 띄운 것) 수
+async function busyAgents($: Engine) {
+  try {
+    const list = await $.agent.list()
+    return list.filter(a => !a.parentId && (a.status === 'running' || a.status === 'pending' || a.status === 'waiting')).length
+  } catch {
+    return 0
+  }
+}
+
 export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
     if (!e.agentId) {
       asked.clear()
-      send($, 'start', { text: cut(e.text, 300) })
+      send($, 'start', { text: cut(e.text, 300), turn: e.turnId })
     }
     return r
   })
@@ -135,7 +146,8 @@ export const register: Register = on => {
       asked.clear()
       const kind = e.isAborted ? 'aborted' : e.reason !== 'answer' ? 'error' : 'answer'
       const text = kind === 'answer' ? String(e.answer ?? '') : ''
-      send($, 'end', { kind, head: text.slice(0, 600), tail: text.slice(-600) })
+      const bg = await busyAgents($)
+      send($, 'end', { kind, head: text.slice(0, 600), tail: text.slice(-600), turn: e.turnId, bg })
     }
     return r
   })
