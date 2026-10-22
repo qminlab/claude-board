@@ -4,6 +4,7 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 // 어느 칸(작업중·확인 필요·완료)에 둘지는 맥의 대기판 서버가 정한다.
 // 그래서 규칙이 바뀌어도 이 파일은 그대로 두고 맥의 server.py만 고치면 모든 대화에 적용된다.
 // 설정(id·title·project)은 모드 폴더의 board.json. 없거나 off면 아무것도 보내지 않는다.
+// 1.1: 승인 판정의 자세한 내용과 실제 실행 시간도 보냄.
 type Cfg = { id: string; title?: string; project?: string; off?: boolean }
 type Signal = Record<string, unknown>
 
@@ -50,6 +51,17 @@ async function post($: Engine, signal: Signal) {
   }
 }
 
+// 실행이 끝나면 실제 실행 시간(승인 기다린 시간 제외)도 보냄 → 맥 서버가 "미리 허용된 도구"인지 정확히 앎
+type Finished = { tool_name?: string; tool_use_id?: string; duration_ms?: number; agent_id?: string }
+function finished($: Engine, e: Finished) {
+  const id = String(e.tool_use_id ?? '')
+  const tool = String(e.tool_name ?? '')
+  if (e.agent_id || !id || !(asked.has(id) || asked.has(`tool:${tool}`))) return
+  asked.delete(id)
+  asked.delete(`tool:${tool}`)
+  send($, 'ran', { use: id, tool, run_ms: typeof e.duration_ms === 'number' ? e.duration_ms : null })
+}
+
 export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const r = await next(e)
@@ -74,7 +86,11 @@ export const register: Register = on => {
     const tool = String(e.tool)
     if (r.decision === 'ask' && e.tool_use_id && !e.agentId && !OWN_TOOL.test(tool)) {
       asked.add(e.tool_use_id)
-      send($, 'ask', { use: e.tool_use_id, tool, input: pick(e.input) })
+      const v = r as { decider?: string; rule?: string; hook?: string; reason?: string }
+      send($, 'ask', {
+        use: e.tool_use_id, tool, input: pick(e.input),
+        decider: v.decider ?? null, rule: v.rule ?? null, hook: v.hook ?? null, why: cut(v.reason, 120),
+      })
     }
     return r
   }).catch(($, e, next) => next(e))
@@ -96,6 +112,15 @@ export const register: Register = on => {
         send($, 'ran', { use: id, tool })
       }
     }
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PostToolUse', async ($, e, next) => {
+    finished($, e as Finished)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    finished($, e as Finished)
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {

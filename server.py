@@ -51,7 +51,7 @@ R_DEFAULT = "확인 필요"
 LOCAL_ADDRS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 lock = threading.Lock()
-state = {"day": "", "counter": 0, "sessions": {}, "links": {}, "blocked": {}}
+state = {"day": "", "counter": 0, "sessions": {}, "links": {}, "blocked": {}, "names": {}}
 
 
 # ---------- 접근 키 (아이패드만 화면을 보고 카드를 내릴 수 있게) ----------
@@ -82,7 +82,7 @@ def load_state():
             state = data
     except (OSError, ValueError):
         pass
-    for k in ("links", "blocked"):
+    for k in ("links", "blocked", "names", "auto_tools", "prompt_tools"):
         if not isinstance(state.get(k), dict):
             state[k] = {}
     for sid, s in state["sessions"].items():   # 예전 상태 파일: 카드가 있으면 연결도 만듦
@@ -141,6 +141,19 @@ def upsert(sid, source, status, project=None, title=None, note=None, reason=None
     link = state["links"].setdefault(sid, {"id": sid, "source": source, "first": now})
     link.update({"title": s["title"], "project": s["project"], "status": status, "last": now})
     link.pop("ended", None)
+    s["name"] = link["name"] = state["names"].get(sid, "")
+
+
+def rename(sid, name):
+    """아이패드에서 정한 표시 이름. 빈 이름이면 원래 이름으로 되돌림. 대화 쪽 이름이 바뀌어도 이 이름이 우선."""
+    name = clip(name, 40)
+    if name:
+        state["names"][sid] = name
+    else:
+        state["names"].pop(sid, None)
+    for box in (state["sessions"], state["links"]):
+        if sid in box:
+            box[sid]["name"] = name
 
 
 def touch(sid):
@@ -160,6 +173,7 @@ def disconnect(sid):
     """연결 끊기: 카드와 연결을 지우고, 이후 이 연결에서 오는 신호는 무시."""
     state["sessions"].pop(sid, None)
     state["links"].pop(sid, None)
+    state["names"].pop(sid, None)
     state["blocked"][sid] = time.time()
 
 
@@ -365,7 +379,8 @@ def handle_event(data, source="app"):
 # 그래서 규칙을 바꿀 때 이 파일만 고치면 모든 대화에 바로 적용된다.
 GRACE = 10.0           # 같은 작업에서 이만큼 막혀 있어야 확인 필요로 옮김 (잠깐 묻고 바로 넘어가는 건 깜빡임만 생겨서 무시)
 LEARN_WITHIN = GRACE   # 확인 필요로 넘어가기 전에 실행이 끝났으면 미리 허용된 도구(묶음)로 기억
-LEARNED_GRACE = 45.0   # 미리 허용된 걸로 기억된 도구는 이만큼 기다림 (오래 걸리는 명령도 안 걸리게)
+LEARNED_GRACE = 180.0  # 미리 허용된 걸로 아는 도구는 이만큼 기다림 (timeout 걸린 긴 명령도 확인 필요로 안 가게)
+HUMAN_WAIT = 2.5       # 장치 1.1+: 승인에 이보다 오래 걸렸으면 사람이 눌러 준 것 → 그 도구 묶음은 "물어보는 도구"
 ASK_TOOLS = re.compile(r"request_folder_access|request_access|request_delete_permission|request_full_control|AskUserQuestion")
 SKIP_LINE = ("💡", "```", "Sources", "출처")
 rt = {}                # 대화별 진행 상황(메모리): 턴 시작 시각, 승인 대기 중인 도구 등
@@ -431,12 +446,31 @@ def family(tool):
 
 
 # 처음부터 미리 허용된 걸로 보는 묶음: 브라우저 도구는 한 번에 여러 동작을 해서 10초를 넘기기 쉬워요
-DEFAULT_AUTO = {"mcp__claude-in-chrome__*", "mcp__remote-devices__Claude_Browser__*"}
+# 맥 연결 도구(명령 실행·파일 올리기 등)는 사용자가 "항상 허용"해 둠. 접근 요청류(ASK_TOOLS)는 따로 10초 규칙.
+DEFAULT_AUTO = {"mcp__claude-in-chrome__*", "mcp__remote-devices__Claude_Browser__*", "mcp__remote-devices__*"}
 
 
 def learned(tool):
+    fam = family(tool)
+    if fam in state.get("prompt_tools", {}) or tool in state.get("prompt_tools", {}):
+        return False                        # 실제로 승인 창을 띄운 적이 있는 도구 묶음
     known = state.get("auto_tools", {})
-    return tool in known or family(tool) in known or family(tool) in DEFAULT_AUTO
+    return tool in known or fam in known or fam in DEFAULT_AUTO
+
+
+def learn_exact(tool, waited_ms):
+    """장치 1.1+가 보낸 실제 실행 시간으로 정확히 배움: 기다린 시간 = 전체 - 실행 시간."""
+    if not tool or ASK_TOOLS.search(tool):
+        return
+    fam = family(tool)
+    auto, prompt = state.setdefault("auto_tools", {}), state.setdefault("prompt_tools", {})
+    if waited_ms < HUMAN_WAIT * 1000:
+        auto[fam] = time.time()
+        prompt.pop(fam, None)
+    else:
+        prompt[fam] = time.time()
+        auto.pop(fam, None)
+    print(f"승인 대기 {waited_ms / 1000:.1f}초: {tool} → {'미리 허용' if waited_ms < HUMAN_WAIT * 1000 else '물어보는 도구'}", flush=True)
 
 
 def learn(tool):
@@ -489,6 +523,8 @@ def handle_relay(data, sid, source):
         if any(p["tool"] == tool for p in r["pending"].values()):
             return                          # 같은 도구의 두 번째 판정 신호 (중복)
         note = friendly(tool, data.get("input"))
+        if data.get("decider") is not None or data.get("rule") or data.get("hook"):
+            print(f"승인 판정: {tool} decider={data.get('decider')} rule={data.get('rule')} hook={data.get('hook')}", flush=True)
         if ev == "question":
             wait, reason = GRACE, R_CHOICE
         else:
@@ -501,9 +537,12 @@ def handle_relay(data, sid, source):
             if not late():
                 r["ran"][key] = ts
             return
+        run_ms = data.get("run_ms")
         for k in hit:
             p = r["pending"].pop(k)
-            if not p["shown"] and ts - p["ts"] < LEARN_WITHIN * 1000:
+            if isinstance(run_ms, (int, float)):
+                learn_exact(tool, max(0.0, ts - p["ts"] - run_ms))
+            elif not p["shown"] and ts - p["ts"] < LEARN_WITHIN * 1000:
                 learn(tool)
         s = state["sessions"].get(sid)
         if s and s["status"] == "needs" and not any(p["shown"] for p in r["pending"].values()) and not late():
@@ -678,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/hook", "/event") and not self._local():
             return self._send(403, "{}")       # 상태 변경은 이 맥에서 온 것만 받음
-        if path in ("/dismiss", "/disconnect") and not self._authorized():
+        if path in ("/dismiss", "/disconnect", "/rename") and not self._authorized():
             return self._send(403, "{}")
 
         if path == "/hook":                    # Claude Code 훅
@@ -694,6 +733,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/dismiss":                 # 완료 카드 탭: 카드만 내림 (연결 유지)
             with lock:
                 remove(str(data.get("id", "")))
+                save_state()
+            return self._send(200, "{}")
+        if path == "/rename":                  # 연결 탭: 표시 이름 바꾸기
+            with lock:
+                rename(str(data.get("id", "")), data.get("name", ""))
                 save_state()
             return self._send(200, "{}")
         if path == "/disconnect":              # 길게 누르기·연결 탭: 연결 끊기
