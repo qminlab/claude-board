@@ -271,6 +271,9 @@ def handle_hook(data):
     if not sid or data.get("agent_id"):      # 서브에이전트 이벤트는 무시
         return
     sid = "code:" + str(sid)
+    if event in ("UserPromptSubmit", "SessionStart", "SessionEnd", "Stop") or sid not in state["sessions"]:
+        print(f"훅 {event}: {sid[:13]} cwd={data.get('cwd')} 제목={data.get('session_title')!r}"
+              f"{' (끊은 세션이라 무시)' if sid in state['blocked'] else ''}", flush=True)
     if sid in state["blocked"]:              # 대기판에서 연결을 끊은 세션
         return
     project = project_from_cwd(data.get("cwd"))
